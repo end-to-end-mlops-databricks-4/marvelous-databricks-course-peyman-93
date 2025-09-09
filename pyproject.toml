@@ -31,6 +31,11 @@ test = ["pre-commit>=4.1.0, <5",
        "pytest-cov>=5.0.0, <6",
        "pyspark>=3.4.0, <4"]
 
+ci = ["pre-commit>=4.1.0, <5",
+      "pytest>=8.0.0, <9",
+      "pytest-cov>=5.0.0, <6",
+      "pyspark>=3.4.0, <4"]
+
 [build-system]
 requires = [
   "setuptools>=72.0"]
@@ -39,7 +44,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where =["src"]
-include = ["house_price*", "marvel_characters*"]
+include = ["house_price*", "marvel_characters*", "financial_complaints*"]
 
 
 [tool.setuptools.dynamic]
