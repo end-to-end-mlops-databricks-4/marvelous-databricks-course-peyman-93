@@ -198,9 +198,9 @@ def save_to_catalog_safe(
     df: pd.DataFrame, 
     table_name: str, 
     dataset_type: str, 
-    config: Any, 
+    config: ProjectConfig, 
     spark: SparkSession, 
-    logger: Any
+    logger: Logger
 ) -> bool:
     """Save DataFrame to Unity Catalog with fallback handling."""
     logger.info(f"Saving {dataset_type} set...")
@@ -325,15 +325,6 @@ for table in tables:
 # MAGIC %md
 # MAGIC ## 10. Display Sample Data
 
-# COMMAND ----------
-
-# Display sample records from train set for verification
-logger.info("Sample records from train_set:")
-display(spark.sql(f"""
-    SELECT * 
-    FROM {config.catalog_name}.{config.schema_name}.train_set
-    LIMIT 5
-"""))
 
 # COMMAND ----------
 
@@ -344,7 +335,7 @@ display(spark.sql(f"""
 
 # Print summary
 print("=" * 80)
-print("✅ FINANCIAL COMPLAINTS DATA PROCESSING PIPELINE COMPLETE!")
+print("FINANCIAL COMPLAINTS DATA PROCESSING PIPELINE COMPLETE!")
 print("=" * 80)
 print(f"\nData successfully saved to Unity Catalog:")
 print(f"  • Catalog: {config.catalog_name}")
