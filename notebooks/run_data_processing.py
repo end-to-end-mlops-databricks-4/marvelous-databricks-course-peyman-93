@@ -17,12 +17,14 @@ sys.path.append(str(Path.cwd().parent / 'src'))
 
 # COMMAND ----------
 
-from loguru import logger
-import yaml
-import sys
-import pandas as pd
-import numpy as np
 import os
+import sys
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import yaml
+from loguru import logger
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import current_timestamp, lit
 
@@ -53,7 +55,18 @@ logger.info(f"Target: {config.target}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Load Data
+# MAGIC ## 2. Initialize Spark Session
+
+# COMMAND ----------
+
+# Initialize Spark session
+spark = SparkSession.builder.appName("FinancialComplaintsProcessing").getOrCreate()
+logger.info("Spark session initialized")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Load Data
 
 # COMMAND ----------
 
@@ -76,7 +89,7 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Preprocess Data
+# MAGIC ## 4. Preprocess Data
 
 # COMMAND ----------
 
@@ -92,7 +105,7 @@ logger.info(f"Features created: {len(data_processor.df.columns)}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Create Train/Test Splits
+# MAGIC ## 5. Create Train/Test Splits
 
 # COMMAND ----------
 
@@ -113,13 +126,13 @@ logger.info(f"Temporal - {config.target} rate: {temporal_test_df[config.target].
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Fix Data Types for Spark Compatibility
+# MAGIC ## 6. Fix Data Types for Spark Compatibility
 
 # COMMAND ----------
 
-def fix_all_numeric_types(df):
-    """
-    Convert all numeric types to Spark-compatible formats.
+def fix_all_numeric_types(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert all numeric types to Spark-compatible formats.
+    
     This handles the Arrow type compatibility issues.
     """
     df = df.copy()
@@ -135,7 +148,7 @@ def fix_all_numeric_types(df):
             try:
                 # Try to convert to nullable Int64 first
                 df[col] = pd.array(df[col], dtype="Int64")
-            except:
+            except Exception:
                 # If that fails, convert to float64 (always works)
                 df[col] = df[col].astype('float64')
                 logger.debug(f"Converted {col} from {dtype_str} to float64")
@@ -152,7 +165,7 @@ def fix_all_numeric_types(df):
         elif df[col].dtype == 'bool':
             try:
                 df[col] = df[col].astype('boolean')
-            except:
+            except Exception:
                 df[col] = df[col].astype('float64')
     
     # Verify no int32 columns remain
@@ -176,15 +189,20 @@ logger.info("Data types fixed successfully")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Save to Unity Catalog
+# MAGIC ## 7. Save to Unity Catalog
 
 # COMMAND ----------
 
 # Function to save with error handling
-def save_to_catalog_safe(df, table_name, dataset_type, config, spark, logger):
-    """
-    Save DataFrame to Unity Catalog with fallback handling
-    """
+def save_to_catalog_safe(
+    df: pd.DataFrame, 
+    table_name: str, 
+    dataset_type: str, 
+    config: Any, 
+    spark: SparkSession, 
+    logger: Any
+) -> bool:
+    """Save DataFrame to Unity Catalog with fallback handling."""
     logger.info(f"Saving {dataset_type} set...")
     
     try:
@@ -256,8 +274,96 @@ if hasattr(data_processor, 'in_progress_df') and len(data_processor.in_progress_
 else:
     logger.info("No in-progress complaints to save")
 
+# COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## 8. Enable Change Data Feed
 
+# COMMAND ----------
+
+# Enable change data feed for tables
+logger.info("Enabling Change Data Feed...")
+
+tables = ['train_set', 'test_set', 'temporal_test_set']
+if hasattr(data_processor, 'in_progress_df') and len(data_processor.in_progress_df) > 0:
+    tables.append('in_progress_set')
+
+for table in tables:
+    try:
+        spark.sql(f"""
+            ALTER TABLE {config.catalog_name}.{config.schema_name}.{table} 
+            SET TBLPROPERTIES (delta.enableChangeDataFeed = true)
+        """)
+        logger.info(f"✓ Enabled CDF for {table}")
+    except Exception as e:
+        logger.warning(f"Could not enable CDF for {table}: {e}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 9. Verify Saved Data
+
+# COMMAND ----------
+
+# Verify the saved data
+logger.info("Verifying saved data...")
+logger.info("-" * 60)
+
+for table in tables:
+    try:
+        count = spark.sql(f"""
+            SELECT COUNT(*) as count 
+            FROM {config.catalog_name}.{config.schema_name}.{table}
+        """).collect()[0]['count']
+        
+        logger.info(f"✓ {table}: {count:,} records")
+    except Exception as e:
+        logger.error(f"✗ {table}: Could not verify - {str(e)}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 10. Display Sample Data
+
+# COMMAND ----------
+
+# Display sample records from train set for verification
+logger.info("Sample records from train_set:")
+display(spark.sql(f"""
+    SELECT * 
+    FROM {config.catalog_name}.{config.schema_name}.train_set
+    LIMIT 5
+"""))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Summary
+
+# COMMAND ----------
+
+# Print summary
+print("=" * 80)
+print("✅ FINANCIAL COMPLAINTS DATA PROCESSING PIPELINE COMPLETE!")
+print("=" * 80)
+print(f"\nData successfully saved to Unity Catalog:")
+print(f"  • Catalog: {config.catalog_name}")
+print(f"  • Schema: {config.schema_name}")
+print(f"\nTables created:")
+
+for table in tables:
+    try:
+        count = spark.table(f"{config.catalog_name}.{config.schema_name}.{table}").count()
+        print(f"  • {table}: {count:,} records")
+    except Exception:
+        print(f"  • {table}: Created")
+
+print(f"\nTotal features: {len(train_df.columns)}")
+print(f"\nNext steps:")
+print(f"  1. Train models using the prepared datasets")
+print(f"  2. Track experiments with MLflow")
+print(f"  3. Register best models for deployment")
+print("=" * 80)
 
 # COMMAND ----------
 
