@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from loguru import logger, Logger 
+from logging import Logger
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import current_timestamp, lit
 
@@ -106,13 +107,14 @@ logger.info(f"Features created: {len(data_processor.df.columns)}")
 
 # MAGIC %md
 # MAGIC ## 5. Create Train/Test Splits
+# MAGIC Note: Data type fixing for Spark compatibility is now handled automatically
 
 # COMMAND ----------
 
-# Split the data
+# Split the data with automatic type fixing for Spark
 logger.info("Creating train/test splits...")
 
-train_df, test_df, temporal_test_df = data_processor.split_data()
+train_df, test_df, temporal_test_df = data_processor.split_data(fix_types_for_spark=True)
 
 logger.info(f"Training set shape: {train_df.shape}")
 logger.info(f"Test set shape: {test_df.shape}")
@@ -126,70 +128,7 @@ logger.info(f"Temporal - {config.target} rate: {temporal_test_df[config.target].
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Fix Data Types for Spark Compatibility
-
-# COMMAND ----------
-
-def fix_all_numeric_types(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert all numeric types to Spark-compatible formats.
-    
-    This handles the Arrow type compatibility issues.
-    """
-    df = df.copy()
-    
-    # Debug: Log initial types
-    logger.info(f"Initial data types distribution: {df.dtypes.value_counts().to_dict()}")
-    
-    for col in df.columns:
-        dtype_str = str(df[col].dtype)
-        
-        # Handle integer types (including int32 which causes issues)
-        if 'int' in dtype_str.lower():
-            try:
-                # Try to convert to nullable Int64 first
-                df[col] = pd.array(df[col], dtype="Int64")
-            except Exception:
-                # If that fails, convert to float64 (always works)
-                df[col] = df[col].astype('float64')
-                logger.debug(f"Converted {col} from {dtype_str} to float64")
-        
-        # Handle float32 (convert to float64 for compatibility)
-        elif dtype_str == 'float32':
-            df[col] = df[col].astype('float64')
-        
-        # Handle object columns (convert to string)
-        elif df[col].dtype == 'object':
-            df[col] = df[col].fillna('').astype(str)
-        
-        # Handle boolean columns
-        elif df[col].dtype == 'bool':
-            try:
-                df[col] = df[col].astype('boolean')
-            except Exception:
-                df[col] = df[col].astype('float64')
-    
-    # Verify no int32 columns remain
-    remaining_int32 = df.select_dtypes(include=['int32']).columns.tolist()
-    if remaining_int32:
-        logger.warning(f"Converting remaining int32 columns to float64: {remaining_int32}")
-        for col in remaining_int32:
-            df[col] = df[col].astype('float64')
-    
-    logger.info(f"Final data types distribution: {df.dtypes.value_counts().to_dict()}")
-    
-    return df
-
-# Apply type fixes to all datasets
-logger.info("Fixing data types for Spark compatibility...")
-train_df = fix_all_numeric_types(train_df)
-test_df = fix_all_numeric_types(test_df)
-temporal_test_df = fix_all_numeric_types(temporal_test_df)
-logger.info("Data types fixed successfully")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 7. Save to Unity Catalog
+# MAGIC ## 6. Save to Unity Catalog
 
 # COMMAND ----------
 
@@ -266,18 +205,17 @@ save_to_catalog_safe(test_df, "test_set", "test", config, spark, logger)
 # Save temporal test set
 save_to_catalog_safe(temporal_test_df, "temporal_test_set", "temporal_test", config, spark, logger)
 
-# Save in-progress complaints if they exist
+# Save in-progress complaints if they exist (already type-fixed in split_data)
 if hasattr(data_processor, 'in_progress_df') and len(data_processor.in_progress_df) > 0:
     logger.info("Processing in-progress complaints...")
-    in_progress_df = fix_all_numeric_types(data_processor.in_progress_df)
-    save_to_catalog_safe(in_progress_df, "in_progress_set", "in_progress", config, spark, logger)
+    save_to_catalog_safe(data_processor.in_progress_df, "in_progress_set", "in_progress", config, spark, logger)
 else:
     logger.info("No in-progress complaints to save")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 8. Enable Change Data Feed
+# MAGIC ## 7. Enable Change Data Feed
 
 # COMMAND ----------
 
@@ -301,7 +239,7 @@ for table in tables:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 9. Verify Saved Data
+# MAGIC ## 8. Verify Saved Data
 
 # COMMAND ----------
 
@@ -323,8 +261,13 @@ for table in tables:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 10. Display Sample Data
+# MAGIC ## 9. Display Sample Data
 
+# COMMAND ----------
+
+# Display a sample of the training data
+logger.info("Displaying sample of training data...")
+display(spark.table(f"{config.catalog_name}.{config.schema_name}.train_set").limit(10))
 
 # COMMAND ----------
 
@@ -358,6 +301,12 @@ print("=" * 80)
 
 # COMMAND ----------
 
+# Get and display preprocessing report
+preprocessing_report = data_processor.get_preprocessing_report()
+print("\n" + preprocessing_report)
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Quick SQL Reference
 # MAGIC 
@@ -372,4 +321,7 @@ print("=" * 80)
 # MAGIC 
 # MAGIC -- Describe table
 # MAGIC DESCRIBE TABLE mlops_dev.peyman21.train_set;
+# MAGIC 
+# MAGIC -- Show table history
+# MAGIC DESCRIBE HISTORY mlops_dev.peyman21.train_set;
 # MAGIC ```

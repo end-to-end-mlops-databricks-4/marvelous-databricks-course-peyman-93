@@ -47,6 +47,59 @@ class DataProcessor:
         print(log_entry)
         self.preprocessing_report.append(log_entry)
 
+    def fix_all_numeric_types(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Convert all numeric types to Spark-compatible formats.
+        
+        This handles the Arrow type compatibility issues when converting pandas DataFrames
+        to Spark DataFrames, particularly for int32 and float32 types.
+        
+        :param df: Input DataFrame with potentially incompatible numeric types
+        :return: DataFrame with Spark-compatible numeric types
+        """
+        df = df.copy()
+        
+        # Debug: Log initial types
+        self._log(f"Initial data types distribution: {df.dtypes.value_counts().to_dict()}")
+        
+        for col in df.columns:
+            dtype_str = str(df[col].dtype)
+            
+            # Handle integer types (including int32 which causes issues)
+            if 'int' in dtype_str.lower():
+                try:
+                    # Try to convert to nullable Int64 first
+                    df[col] = pd.array(df[col], dtype="Int64")
+                except Exception:
+                    # If that fails, convert to float64 (always works)
+                    df[col] = df[col].astype('float64')
+                    self._log(f"  Converted {col} from {dtype_str} to float64")
+            
+            # Handle float32 (convert to float64 for compatibility)
+            elif dtype_str == 'float32':
+                df[col] = df[col].astype('float64')
+            
+            # Handle object columns (convert to string)
+            elif df[col].dtype == 'object':
+                df[col] = df[col].fillna('').astype(str)
+            
+            # Handle boolean columns
+            elif df[col].dtype == 'bool':
+                try:
+                    df[col] = df[col].astype('boolean')
+                except Exception:
+                    df[col] = df[col].astype('float64')
+        
+        # Verify no int32 columns remain
+        remaining_int32 = df.select_dtypes(include=['int32']).columns.tolist()
+        if remaining_int32:
+            self._log(f"  Converting remaining int32 columns to float64: {remaining_int32}")
+            for col in remaining_int32:
+                df[col] = df[col].astype('float64')
+        
+        self._log(f"Final data types distribution: {df.dtypes.value_counts().to_dict()}")
+        
+        return df
+
     def preprocess(self) -> None:
         """Execute the complete preprocessing pipeline for financial complaints data.
         
@@ -539,11 +592,13 @@ class DataProcessor:
         
         self._log(f"  Selected {len(modeling_features)} features for modeling")
 
-    def split_data(self, test_size: float = None, random_state: int = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def split_data(self, test_size: float = None, random_state: int = None, 
+                  fix_types_for_spark: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """Split the DataFrame into training, test, and temporal test sets.
         
         :param test_size: The proportion of the dataset to include in the test split
         :param random_state: Controls the shuffling applied to the data before applying the split
+        :param fix_types_for_spark: Whether to fix numeric types for Spark compatibility
         :return: A tuple containing training, test, and temporal test DataFrames
         """
         self._log("\nCreating train/test splits...")
@@ -561,7 +616,7 @@ class DataProcessor:
         self._log(f"  Resolved complaints: {len(resolved_df):,}")
         self._log(f"  In-progress complaints: {len(in_progress_df):,}")
         
-        # Sort by date for temporal split
+        # Sort by date for temporal split - fix column name
         resolved_df = resolved_df.sort_values('Date_received').reset_index(drop=True)
         
         # Create temporal test set (last 10% of resolved data)
@@ -601,6 +656,18 @@ class DataProcessor:
         
         # Store in-progress for future predictions
         self.in_progress_df = in_progress_df
+        
+        # Fix data types for Spark compatibility if requested
+        if fix_types_for_spark:
+            self._log("\nFixing data types for Spark compatibility...")
+            train_df = self.fix_all_numeric_types(train_df)
+            test_df = self.fix_all_numeric_types(test_df)
+            temporal_test_df = self.fix_all_numeric_types(temporal_test_df)
+            
+            if len(in_progress_df) > 0:
+                self.in_progress_df = self.fix_all_numeric_types(in_progress_df)
+            
+            self._log("Data types fixed successfully")
         
         return train_df, test_df, temporal_test_df
 
