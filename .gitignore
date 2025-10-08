@@ -97,3 +97,4 @@ dmypy.json
 .history
 .venv-mlops/
 data/Consumer_Complaints.csv
+.env

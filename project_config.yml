@@ -69,16 +69,16 @@ num_features:
 
 cat_features:
   - Product
-  - Sub-product
+  - Sub_product
   - Issue
-  - Sub-issue
+  - Sub_issue
   - Company
   - State
   - ZIP_3digit
-  - Submitted via
+  - Submitted_via
   - Tags
-  - Consumer consent provided?
-  - Timely response?
+  - Consumer_consent_provided
+  - Timely_response
   - consumer_disputed
   - region
   - season

@@ -11,11 +11,17 @@ dependencies = [
     "pyarrow==17.0.0",
     "scikit-learn==1.7.0",
     "lightgbm==4.6.0",
-    "scipy==1.16.0",
+    "xgboost==2.0.3",
+    "scipy==1.11.4",
     "databricks-sdk==0.55.0",
     "pydantic==2.11.7",
     "loguru==0.7.3",
     "python-dotenv==1.1.1",
+    "pyyaml==6.0.1",
+    "category-encoders==2.6.3",
+    "matplotlib==3.8.2",
+    "seaborn==0.13.2",
+    "pyspark>=3.4.0",
 ]
 
 dynamic = ['version']
@@ -24,7 +30,9 @@ dynamic = ['version']
 dev = ["databricks-connect>=16.0, <17",
        "ipykernel>=6.29.5, <7",
        "pip>=25.0.1, <26",
-       "pre-commit>=4.1.0, <5"]
+       "pre-commit>=4.1.0, <5",
+       "black>=24.0.0",
+       "isort>=5.13.0"]
 
 test = ["pre-commit>=4.1.0, <5",
        "pytest>=8.0.0, <9",
@@ -43,8 +51,8 @@ build-backend = "setuptools.build_meta"
 
 
 [tool.setuptools.packages.find]
-where =["src"]
-#include = ["financial_complaints*"]
+where = ["src"]
+include = ["financial_complaints*"]
 
 
 [tool.setuptools.dynamic]
@@ -86,9 +94,19 @@ lint.ignore = [
     "C901", # too complex
     "ERA001", # commented out code
     "D100", # missing docstring
-    "ERA001" # commented out code
+    "ANN101", # missing type annotation for self
+    "ANN102", # missing type annotation for cls
+    "ANN401", # dynamically typed expressions
 ]
 
 [tool.ruff.format]
 indent-style = "space"
 docstring-code-format = true
+
+[tool.black]
+line-length = 120
+target-version = ['py312']
+
+[tool.isort]
+profile = "black"
+line_length = 120

@@ -24,9 +24,13 @@ class ProjectConfig(BaseModel):
     high_cardinality_features: List[str]
     data_quality: Dict[str, Any]
     feature_engineering: Dict[str, Any]
+    # ADD THESE THREE LINES - they're in your YAML but missing from the class
+    experiment_name_basic: str
+    experiment_name_custom: str
+    experiment_name_fe: str
 
     @classmethod
-    def from_yaml(cls, config_path: str ="project_config.yml", env: str = "dev") -> "ProjectConfig":
+    def from_yaml(cls, config_path: str = "project_config.yml", env: str = "dev") -> "ProjectConfig":
         """Load and parse configuration settings from a YAML file.
 
         :param config_path: Path to the YAML configuration file (default: project_config.yml)
