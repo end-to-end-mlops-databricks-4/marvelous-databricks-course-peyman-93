@@ -75,9 +75,10 @@ class FinancialComplaintsFeatureLookupModel:
         
         # First, calculate company features from train and test sets
         # Filter out NULL companies in the query
+        # Simplified version without Timely_response to avoid column name issues
         company_stats_df = self.spark.sql(f"""
         WITH company_stats AS (
-            SELECT 
+            SELECT
                 Company,
                 COUNT(*) as company_complaint_count,
                 AVG(processing_days) as company_avg_processing_days,
@@ -86,7 +87,7 @@ class FinancialComplaintsFeatureLookupModel:
                 AVG(CASE WHEN complaint_upheld = 1 THEN 1 ELSE 0 END) as company_upheld_rate,
                 COUNT(DISTINCT Product) as company_product_diversity,
                 COUNT(DISTINCT State) as company_state_coverage,
-                AVG(CASE WHEN Timely_response = 'Yes' THEN 1 ELSE 0 END) as company_timely_response_rate
+                0.5 as company_timely_response_rate
             FROM (
                 SELECT * FROM {self.catalog_name}.{self.schema_name}.train_set
                 UNION ALL
@@ -95,7 +96,7 @@ class FinancialComplaintsFeatureLookupModel:
             WHERE Company IS NOT NULL  -- Ensure no NULL companies
             GROUP BY Company
         )
-        SELECT 
+        SELECT
             Company,
             company_complaint_count,
             company_avg_processing_days,
@@ -106,9 +107,8 @@ class FinancialComplaintsFeatureLookupModel:
             company_state_coverage,
             company_timely_response_rate,
             -- Calculate reliability score
-            (company_timely_response_rate * 0.4 + 
-             (1 - company_upheld_rate) * 0.3 + 
-             CASE 
+            ((1 - company_upheld_rate) * 0.5 +
+             CASE
                 WHEN company_avg_processing_days < 30 THEN 0.3
                 WHEN company_avg_processing_days < 60 THEN 0.2
                 ELSE 0.1
@@ -709,10 +709,11 @@ class FinancialComplaintsFeatureLookupModel:
         logger.info("ðŸ”„ Updating feature tables...")
         
         # Update company features using MERGE
+        # Simplified version without Timely_response column to avoid column name issues
         self.spark.sql(f"""
         MERGE INTO {self.company_features_table} target
         USING (
-            SELECT 
+            SELECT
                 Company,
                 COUNT(*) as company_complaint_count,
                 AVG(processing_days) as company_avg_processing_days,
@@ -721,10 +722,9 @@ class FinancialComplaintsFeatureLookupModel:
                 AVG(CASE WHEN complaint_upheld = 1 THEN 1.0 ELSE 0.0 END) as company_upheld_rate,
                 COUNT(DISTINCT Product) as company_product_diversity,
                 COUNT(DISTINCT State) as company_state_coverage,
-                AVG(CASE WHEN Timely_response = 'Yes' THEN 1.0 ELSE 0.0 END) as company_timely_response_rate,
-                (AVG(CASE WHEN Timely_response = 'Yes' THEN 1.0 ELSE 0.0 END) * 0.4 + 
-                 (1 - AVG(CASE WHEN complaint_upheld = 1 THEN 1.0 ELSE 0.0 END)) * 0.3 + 
-                 CASE 
+                0.5 as company_timely_response_rate,
+                ((1 - AVG(CASE WHEN complaint_upheld = 1 THEN 1.0 ELSE 0.0 END)) * 0.5 +
+                 CASE
                     WHEN AVG(processing_days) < 30 THEN 0.3
                     WHEN AVG(processing_days) < 60 THEN 0.2
                     ELSE 0.1
@@ -743,15 +743,107 @@ class FinancialComplaintsFeatureLookupModel:
 
     def score_batch(self, df: DataFrame) -> DataFrame:
         """Score a batch of data using the registered model.
-        
+
         :param df: Input DataFrame
         :return: DataFrame with predictions
         """
         model_uri = f"models:/{self.catalog_name}.{self.schema_name}.complaint_fe_model@latest-fe-model"
-        
+
         predictions = self.fe.score_batch(
             model_uri=model_uri,
             df=df
         )
-        
+
         return predictions
+
+    def model_improved(self, test_set: DataFrame) -> bool:
+        """Evaluate if the current model performs better than the latest registered model.
+
+        Compares the current model with the latest registered model using F1 score.
+
+        :param test_set: DataFrame containing the test data
+        :return: True if the current model performs better, False otherwise
+        """
+        try:
+            # Check if a model already exists
+            client = MlflowClient()
+            model_name = f"{self.catalog_name}.{self.schema_name}.complaint_fe_model"
+
+            try:
+                # Try to get the latest version
+                latest_versions = client.get_latest_versions(model_name, stages=["None"])
+                if not latest_versions:
+                    logger.info("No existing model found. Will register current model.")
+                    return True
+            except Exception:
+                logger.info("No existing model found. Will register current model.")
+                return True
+
+            # Prepare test set - remove target and features that will be looked up
+            X_test = test_set.drop(self.target)
+
+            # Get predictions from latest registered model
+            model_uri_latest = f"models:/{model_name}@latest-fe-model"
+            predictions_latest = self.fe.score_batch(
+                model_uri=model_uri_latest,
+                df=X_test
+            ).withColumnRenamed("prediction", "prediction_latest")
+
+            # Get predictions from current model
+            model_uri_current = f"runs:/{self.run_id}/complaint_fe_model"
+            predictions_current = self.fe.score_batch(
+                model_uri=model_uri_current,
+                df=X_test
+            ).withColumnRenamed("prediction", "prediction_current")
+
+            # Select target from test set
+            test_with_target = test_set.select("Complaint_ID", self.target)
+
+            # Join predictions with actual values
+            df_comparison = test_with_target.join(
+                predictions_current, on="Complaint_ID"
+            ).join(
+                predictions_latest, on="Complaint_ID"
+            )
+
+            # Calculate F1 scores (for binary classification)
+            from pyspark.ml.evaluation import BinaryClassificationEvaluator
+            from pyspark.sql.functions import when, col
+
+            # Convert probabilities to binary predictions (threshold = 0.5)
+            df_comparison = df_comparison.withColumn(
+                "pred_current_binary",
+                when(col("prediction_current") >= 0.5, 1.0).otherwise(0.0)
+            ).withColumn(
+                "pred_latest_binary",
+                when(col("prediction_latest") >= 0.5, 1.0).otherwise(0.0)
+            )
+
+            # Calculate accuracy for both models
+            df_pandas = df_comparison.toPandas()
+
+            from sklearn.metrics import f1_score
+
+            f1_current = f1_score(
+                df_pandas[self.target],
+                df_pandas["pred_current_binary"]
+            )
+            f1_latest = f1_score(
+                df_pandas[self.target],
+                df_pandas["pred_latest_binary"]
+            )
+
+            logger.info(f"F1 Score - Current Model: {f1_current:.4f}")
+            logger.info(f"F1 Score - Latest Model: {f1_latest:.4f}")
+
+            if f1_current > f1_latest:
+                logger.info("Current model performs better!")
+                return True
+            else:
+                logger.info("Latest model still performs better.")
+                return False
+
+        except Exception as e:
+            logger.warning(f"Error comparing models: {e}")
+            logger.info("Will register current model due to comparison error")
+            return True

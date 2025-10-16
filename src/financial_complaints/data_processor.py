@@ -630,11 +630,21 @@ class DataProcessor:
         self._log(f"  Temporal test set: {len(temporal_test_df):,} records (after {temporal_cutoff_date.date()})")
         
         # Create stratified train/test split on pre-temporal data
+        # Check if we have enough samples for stratified split
+        stratify_col = None
         if self.config.parameters.get('stratify', True):
-            stratify_col = pre_temporal_df[self.config.target]
-        else:
-            stratify_col = None
-        
+            # Count samples per class
+            class_counts = pre_temporal_df[self.config.target].value_counts()
+            min_class_count = class_counts.min()
+
+            # Need at least 2 samples per class for stratified split
+            if min_class_count >= 2:
+                stratify_col = pre_temporal_df[self.config.target]
+                self._log(f"  Using stratified split (min class count: {min_class_count})")
+            else:
+                self._log(f"  WARNING: Not enough samples for stratified split (min class count: {min_class_count})")
+                self._log(f"  Falling back to random split")
+
         train_df, test_df = train_test_split(
             pre_temporal_df,
             test_size=test_size,
@@ -671,11 +681,49 @@ class DataProcessor:
         
         return train_df, test_df, temporal_test_df
 
-    def save_to_catalog(self, train_set: pd.DataFrame, test_set: pd.DataFrame, 
+    def save_to_catalog(self, train_set: pd.DataFrame, test_set: pd.DataFrame,
                        temporal_test_set: pd.DataFrame = None) -> None:
-        """Save datasets to Unity Catalog - simplified version."""
+        """Save datasets to Unity Catalog with proper table management.
+
+        Creates or replaces training, test, and temporal test tables in the specified
+        Unity Catalog schema. Uses PySpark for efficient data transfer.
+
+        :param train_set: Training dataset
+        :param test_set: Test dataset
+        :param temporal_test_set: Temporal test dataset (optional)
+        """
         self._log(f"\nSaving to Unity Catalog: {self.config.catalog_name}.{self.config.schema_name}")
-        self._log("Note: This is a placeholder. Actual saving will be done in the notebook.")
+
+        # Define table names
+        train_table = f"{self.config.catalog_name}.{self.config.schema_name}.train_set"
+        test_table = f"{self.config.catalog_name}.{self.config.schema_name}.test_set"
+        temporal_test_table = f"{self.config.catalog_name}.{self.config.schema_name}.temporal_test_set"
+
+        try:
+            # Save training set
+            self._log(f"  Saving training set to {train_table}...")
+            train_spark_df = self.spark.createDataFrame(train_set)
+            train_spark_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(train_table)
+            self._log(f"    ✓ Training set saved: {len(train_set):,} records")
+
+            # Save test set
+            self._log(f"  Saving test set to {test_table}...")
+            test_spark_df = self.spark.createDataFrame(test_set)
+            test_spark_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(test_table)
+            self._log(f"    ✓ Test set saved: {len(test_set):,} records")
+
+            # Save temporal test set if provided
+            if temporal_test_set is not None and len(temporal_test_set) > 0:
+                self._log(f"  Saving temporal test set to {temporal_test_table}...")
+                temporal_spark_df = self.spark.createDataFrame(temporal_test_set)
+                temporal_spark_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(temporal_test_table)
+                self._log(f"    ✓ Temporal test set saved: {len(temporal_test_set):,} records")
+
+            self._log("\n✓ All datasets successfully saved to Unity Catalog")
+
+        except Exception as e:
+            self._log(f"\n✗ Error saving to Unity Catalog: {str(e)}")
+            raise
 
     def enable_change_data_feed(self) -> None:
         """Enable Change Data Feed for all tables to track changes over time."""
@@ -703,3 +751,125 @@ class DataProcessor:
         report.append("=" * 70)
         
         return "\n".join(report)
+
+
+def generate_synthetic_data(reference_df: pd.DataFrame, num_rows: int = 10) -> pd.DataFrame:
+    """Generate synthetic financial complaints data based on reference DataFrame schema.
+
+    This mimics new data arrival in production. Generates realistic complaint data
+    with random variations based on the reference data distributions.
+
+    :param reference_df: Reference DataFrame to infer schema and distributions
+    :param num_rows: Number of synthetic rows to generate
+    :return: DataFrame with synthetic complaint records
+    """
+    np.random.seed(None)  # Random seed for variability
+
+    # Sample companies, products, issues from reference data
+    companies = reference_df['Company'].dropna().unique()
+    products = reference_df['Product'].dropna().unique()
+    states = reference_df['State'].dropna().unique()
+
+    # Generate synthetic records
+    synthetic_records = []
+
+    for i in range(num_rows):
+        # Random dates (recent complaints)
+        days_ago = np.random.randint(1, 365)
+        date_received = pd.Timestamp.now() - pd.Timedelta(days=days_ago)
+        date_sent = date_received + pd.Timedelta(days=np.random.randint(0, 5))
+
+        # Random complaint outcome
+        outcomes = [
+            'Closed with monetary relief',
+            'Closed with non-monetary relief',
+            'Closed with explanation',
+            'Closed without relief',
+            'In progress'
+        ]
+        outcome_probs = [0.15, 0.20, 0.35, 0.20, 0.10]
+
+        record = {
+            'Complaint ID': f'SYN-{i+1000000}',
+            'Date received': date_received.strftime('%Y-%m-%d'),
+            'Product': np.random.choice(products),
+            'Sub-product': np.random.choice(['Checking account', 'Credit card', 'Mortgage', None]),
+            'Issue': np.random.choice(['Billing dispute', 'Unauthorized transaction', 'Incorrect information']),
+            'Sub-issue': np.random.choice(['Account opening', 'Late fee', None]),
+            'Company': np.random.choice(companies),
+            'State': np.random.choice(states),
+            'ZIP code': f'{np.random.randint(10000, 99999)}',
+            'Submitted via': np.random.choice(['Web', 'Phone', 'Referral', 'Postal mail']),
+            'Date sent to company': date_sent.strftime('%Y-%m-%d'),
+            'Company response to consumer': np.random.choice(outcomes, p=outcome_probs),
+            'Timely response?': np.random.choice(['Yes', 'No'], p=[0.95, 0.05]),
+            'Consumer disputed?': np.random.choice(['Yes', 'No', None], p=[0.15, 0.70, 0.15]),
+            'Tags': np.random.choice(['Servicemember', 'Older American', None], p=[0.1, 0.1, 0.8]),
+            'Consumer consent provided?': np.random.choice(['Consent provided', 'Consent not provided', None]),
+            'Company public response': None,
+            'Consumer complaint narrative': None
+        }
+
+        synthetic_records.append(record)
+
+    synthetic_df = pd.DataFrame(synthetic_records)
+    print(f"Generated {num_rows} synthetic complaint records")
+
+    return synthetic_df
+
+
+def generate_test_data(reference_df: pd.DataFrame, num_rows: int = 10) -> pd.DataFrame:
+    """Generate deterministic test data for integration testing.
+
+    Unlike synthetic data, this generates consistent, predictable test cases
+    suitable for validation and testing pipelines.
+
+    :param reference_df: Reference DataFrame to infer schema
+    :param num_rows: Number of test rows to generate
+    :return: DataFrame with test complaint records
+    """
+    np.random.seed(42)  # Fixed seed for reproducibility
+
+    # Use common, known values for testing
+    test_records = []
+
+    for i in range(num_rows):
+        # Fixed date pattern for testing
+        date_received = pd.Timestamp('2024-01-01') + pd.Timedelta(days=i)
+        date_sent = date_received + pd.Timedelta(days=2)
+
+        # Alternating outcomes for balanced test data
+        outcomes = [
+            'Closed with monetary relief',
+            'Closed with explanation',
+            'Closed with non-monetary relief',
+            'Closed without relief'
+        ]
+
+        record = {
+            'Complaint ID': f'TEST-{i+1}',
+            'Date received': date_received.strftime('%Y-%m-%d'),
+            'Product': 'Credit card' if i % 2 == 0 else 'Checking or savings account',
+            'Sub-product': 'General-purpose credit card or charge card' if i % 2 == 0 else 'Checking account',
+            'Issue': 'Billing dispute' if i % 2 == 0 else 'Account opening, closing, or management',
+            'Sub-issue': 'Credit card company isn\'t resolving a dispute' if i % 2 == 0 else 'Deposits and withdrawals',
+            'Company': 'BANK OF AMERICA, NATIONAL ASSOCIATION' if i % 2 == 0 else 'WELLS FARGO & COMPANY',
+            'State': 'CA' if i % 3 == 0 else ('NY' if i % 3 == 1 else 'TX'),
+            'ZIP code': '90001' if i % 2 == 0 else '10001',
+            'Submitted via': 'Web',
+            'Date sent to company': date_sent.strftime('%Y-%m-%d'),
+            'Company response to consumer': outcomes[i % len(outcomes)],
+            'Timely response?': 'Yes',
+            'Consumer disputed?': 'Yes' if i % 2 == 0 else 'No',
+            'Tags': 'Servicemember' if i == 0 else None,
+            'Consumer consent provided?': 'Consent provided',
+            'Company public response': 'Company believes it acted appropriately',
+            'Consumer complaint narrative': f'Test complaint narrative {i+1}. This is a test case for validation.'
+        }
+
+        test_records.append(record)
+
+    test_df = pd.DataFrame(test_records)
+    print(f"Generated {num_rows} deterministic test complaint records")
+
+    return test_df
