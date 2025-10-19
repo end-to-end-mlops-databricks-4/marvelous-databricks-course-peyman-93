@@ -1,12 +1,7 @@
-"""Deploy Financial Complaints Model to Serving Endpoint.
+"""Deploy Financial Complaints Feature Engineering Model to Serving Endpoint.
 
-This script deploys a trained machine learning model with feature engineering to a
-Databricks Model Serving endpoint:
-1. Retrieves the model version from upstream training task
-2. Loads project configuration
-3. Creates or updates online feature tables for real-time serving
-4. Deploys or updates the model serving endpoint
-5. Optionally deletes the endpoint in test mode
+This script deploys the trained model to a serving endpoint with feature lookup capabilities.
+It publishes feature tables to the online store and creates/updates the model serving endpoint.
 
 Usage:
     python 03.deploy_model.py \
@@ -16,6 +11,7 @@ Usage:
 """
 
 import argparse
+import time
 
 from databricks.feature_engineering import FeatureEngineeringClient
 from databricks.sdk import WorkspaceClient
@@ -27,159 +23,132 @@ from financial_complaints.config import ProjectConfig
 from financial_complaints.serving.fe_model_serving import FeatureLookupServing
 
 
-def parse_arguments():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Deploy financial complaints model to serving endpoint"
-    )
-    parser.add_argument(
-        "--root_path",
-        action="store",
-        default=None,
-        type=str,
-        required=True,
-        help="Root path of the project",
-    )
-    parser.add_argument(
-        "--env",
-        action="store",
-        default=None,
-        type=str,
-        required=True,
-        help="Environment: dev, acc, or prd",
-    )
-    parser.add_argument(
-        "--is_test",
-        action="store",
-        default=0,
-        type=int,
-        required=True,
-        help="Whether running in test mode (1 deletes endpoint after creation)",
-    )
-    return parser.parse_args()
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--root_path",
+    action="store",
+    default=None,
+    type=str,
+    required=True,
+)
 
+parser.add_argument(
+    "--env",
+    action="store",
+    default=None,
+    type=str,
+    required=True,
+)
 
-def main():
-    """Main execution function."""
-    # Parse arguments
-    args = parse_arguments()
-    root_path = args.root_path
-    env = args.env
-    is_test = args.is_test
+parser.add_argument(
+    "--is_test",
+    action="store",
+    default=0,
+    type=int,
+    required=True,
+)
 
-    logger.info("=" * 70)
-    logger.info("FINANCIAL COMPLAINTS MODEL DEPLOYMENT")
-    logger.info("=" * 70)
-    logger.info(f"Root path: {root_path}")
-    logger.info(f"Environment: {env}")
-    logger.info(f"Test mode: {'Yes (will delete endpoint)' if is_test == 1 else 'No'}")
-    logger.info("=" * 70)
+args = parser.parse_args()
+root_path = args.root_path
+is_test = args.is_test
+config_path = f"{root_path}/files/project_config.yml"
 
-    # Initialize Spark and DBUtils
-    spark = SparkSession.builder.getOrCreate()
-    dbutils = DBUtils(spark)
+spark = SparkSession.builder.getOrCreate()
+dbutils = DBUtils(spark)
+model_version = dbutils.jobs.taskValues.get(taskKey="train_model", key="model_version")
 
-    # Get model version from upstream training task
+# Load project config
+config = ProjectConfig.from_yaml(config_path=config_path, env=args.env)
+logger.info("Loaded config file.")
+
+catalog_name = config.catalog_name
+schema_name = config.schema_name
+endpoint_name = f"complaints-model-serving-fe-{args.env}"
+
+logger.info(f"Deploying model version: {model_version}")
+logger.info(f"Catalog: {catalog_name}")
+logger.info(f"Schema: {schema_name}")
+logger.info(f"Endpoint: {endpoint_name}")
+
+# Initialize Feature Engineering Client
+fe = FeatureEngineeringClient()
+
+# Create online store if it doesn't exist
+online_store_name = "financial-complaints-online-store"
+online_store = None
+
+try:
+    online_store = fe.get_online_store(name=online_store_name)
+    logger.info(f"Online store '{online_store_name}' found.")
+except Exception as e:
+    logger.info(f"Online store not found, will create it. Error: {e}")
+
+if online_store is None:
+    logger.info(f"Creating online store '{online_store_name}'...")
     try:
-        model_version = dbutils.jobs.taskValues.get(taskKey="train_model", key="model_version")
-        logger.info(f"Retrieved model version from training task: {model_version}")
-    except Exception as e:
-        logger.warning(f"Could not retrieve model version from task values: {e}")
-        logger.info("Will use 'latest' version")
-        model_version = "latest"
-
-    # Load project configuration
-    config_path = f"{root_path}/files/project_config.yml"
-    logger.info(f"\nLoading configuration from: {config_path}")
-    config = ProjectConfig.from_yaml(config_path=config_path, env=env)
-    logger.info("Configuration loaded successfully")
-
-    # Extract configuration values
-    catalog_name = config.catalog_name
-    schema_name = config.schema_name
-    endpoint_name = f"complaints-model-serving-fe-{env}"
-
-    logger.info(f"\nDeployment configuration:")
-    logger.info(f"  Catalog: {catalog_name}")
-    logger.info(f"  Schema: {schema_name}")
-    logger.info(f"  Endpoint: {endpoint_name}")
-    logger.info(f"  Model version: {model_version}")
-
-    # Define feature table names
-    company_features_table = f"{catalog_name}.{schema_name}.company_features"
-    state_features_table = f"{catalog_name}.{schema_name}.state_features"
-    text_features_table = f"{catalog_name}.{schema_name}.text_features"
-
-    # Initialize Feature Lookup Serving Manager
-    logger.info("\n" + "=" * 70)
-    logger.info("INITIALIZING SERVING MANAGER")
-    logger.info("=" * 70)
-    feature_model_server = FeatureLookupServing(
-        model_name=f"{catalog_name}.{schema_name}.complaint_fe_model",
-        endpoint_name=endpoint_name,
-        company_table=company_features_table,
-        state_table=state_features_table,
-    )
-    logger.info("Serving manager initialized successfully")
-
-    # Note: Online tables are now managed automatically by Feature Engineering
-    # when using FeatureLookup in model serving. We don't need to manually create them.
-    logger.info("\n" + "=" * 70)
-    logger.info("FEATURE TABLES READY FOR SERVING")
-    logger.info("=" * 70)
-    logger.info("Feature tables will be automatically synchronized for online serving")
-    logger.info(f"  Company features: {company_features_table}")
-    logger.info(f"  State features: {state_features_table}")
-    logger.info("\n✓ Feature tables are ready for model serving")
-
-    # Deploy or update the model serving endpoint
-    logger.info("\n" + "=" * 70)
-    logger.info("DEPLOYING/UPDATING MODEL SERVING ENDPOINT")
-    logger.info("=" * 70)
-    logger.info(f"Endpoint name: {endpoint_name}")
-    logger.info(f"Model: {catalog_name}.{schema_name}.complaint_fe_model")
-    logger.info(f"Version: {model_version}")
-
-    try:
-        feature_model_server.deploy_or_update_serving_endpoint(
-            version=model_version,
-            workload_size="Small",
-            scale_to_zero=True,
-            wait=False
+        fe.create_online_store(
+            name=online_store_name,
+            capacity="CU_1"
         )
-        logger.info("✓ Started deployment/update of the serving endpoint")
-        logger.info(f"  Endpoint will be available at: /serving-endpoints/{endpoint_name}/invocations")
+        logger.info(f"Online store creation initiated.")
+        # Wait a bit for creation
+        time.sleep(10)
+        online_store = fe.get_online_store(name=online_store_name)
+        logger.info(f"Online store '{online_store_name}' created successfully.")
     except Exception as e:
-        logger.error(f"Failed to deploy/update serving endpoint: {e}")
+        logger.error(f"Failed to create online store: {e}")
         raise
 
-    # Delete endpoint if in test mode
-    if is_test == 1:
-        logger.info("\n" + "=" * 70)
-        logger.info("TEST MODE: CLEANING UP")
-        logger.info("=" * 70)
-        logger.info(f"Deleting serving endpoint: {endpoint_name}")
-        try:
-            workspace = WorkspaceClient()
-            workspace.serving_endpoints.delete(name=endpoint_name)
-            logger.info("✓ Serving endpoint deleted successfully")
-        except Exception as e:
-            logger.warning(f"Could not delete endpoint: {e}")
+if online_store is None:
+    raise RuntimeError(f"Online store '{online_store_name}' is None after creation attempt!")
 
-    # Final summary
-    logger.info("\n" + "=" * 70)
-    logger.info("DEPLOYMENT COMPLETED SUCCESSFULLY")
-    logger.info("=" * 70)
-    logger.info(f"Environment: {env}")
-    logger.info(f"Endpoint: {endpoint_name}")
-    logger.info(f"Model: {catalog_name}.{schema_name}.complaint_fe_model")
-    logger.info(f"Version: {model_version}")
-    if is_test == 0:
-        logger.info(f"\nEndpoint URL: /serving-endpoints/{endpoint_name}/invocations")
-        logger.info("The endpoint is now ready to serve predictions with feature lookups")
-    else:
-        logger.info("\nTest mode: Endpoint was created and then deleted")
+# Initialize Feature Lookup Serving Manager
+feature_model_server = FeatureLookupServing(
+    model_name=f"{catalog_name}.{schema_name}.complaint_fe_model",
+    endpoint_name=endpoint_name,
+    company_table=f"{catalog_name}.{schema_name}.company_features",
+    state_table=f"{catalog_name}.{schema_name}.state_features",
+)
 
+# Publish company features to online store
+logger.info("Publishing company_features to online store...")
+feature_model_server.create_or_update_online_table(
+    online_store=online_store,
+    table_name=f"{catalog_name}.{schema_name}.company_features"
+)
+logger.info("Company features published.")
 
-if __name__ == "__main__":
-    main()
+# Publish state features to online store
+logger.info("Publishing state_features to online store...")
+feature_model_server.create_or_update_online_table(
+    online_store=online_store,
+    table_name=f"{catalog_name}.{schema_name}.state_features"
+)
+logger.info("State features published.")
+
+# CRITICAL FIX: Publish text features to online store
+logger.info("Publishing text_features to online store...")
+feature_model_server.create_or_update_online_table(
+    online_store=online_store,
+    table_name=f"{catalog_name}.{schema_name}.text_features"
+)
+logger.info("Text features published.")
+
+# Wait for online tables to sync (give them time to be ready)
+logger.info("Waiting 60 seconds for online tables to sync...")
+time.sleep(300)
+logger.info("Online tables should be ready now.")
+
+# Deploy the model serving endpoint with feature lookup
+logger.info("Deploying model serving endpoint...")
+feature_model_server.deploy_or_update_serving_endpoint(version=model_version)
+logger.info("Started deployment/update of the serving endpoint.")
+logger.info(f"Endpoint name: {endpoint_name}")
+logger.info("Note: Endpoint deployment is asynchronous. Check Databricks UI for status.")
+
+# Delete endpoint if test
+if is_test == 1:
+    logger.info("Test mode: Cleaning up serving endpoint...")
+    workspace = WorkspaceClient()
+    workspace.serving_endpoints.delete(name=endpoint_name)
+    logger.info("Serving endpoint deleted.")

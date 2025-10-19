@@ -102,7 +102,7 @@ def main():
         logger.info("\n" + "=" * 70)
         logger.info("GENERATING SYNTHETIC DATA (Production Simulation)")
         logger.info("=" * 70)
-        new_data = generate_synthetic_data(df, num_rows=10)
+        new_data = generate_synthetic_data(df, num_rows=1000)
         logger.info("Synthetic data generated successfully")
     else:
         # Generate test data

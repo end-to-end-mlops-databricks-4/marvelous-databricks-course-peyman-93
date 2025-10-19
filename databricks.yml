@@ -1,16 +1,25 @@
 # This is a Databricks asset bundle definition for marvelous-databricks-course-peyman-93.
-# The Databricks extension requires databricks.yml configuration file.
-# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
-
 bundle:
   name: marvelous-databricks-course-peyman-93
 
-include:
-  - "project_config.yml"
-
 sync:
   include:
+    - "**/*.py"
+    - "**/*.ipynb"
+    - "scripts/**"
+    - "src/**"
+    - "notebooks/**"
     - "data/*.csv"
+    - "project_config.yml"
+  exclude:
+    - ".git/**"
+    - ".venv/**"
+    - "__pycache__/**"
+    - "**/*.pyc"
+    - ".DS_Store"
+    - "dist/**"
+    - "build/**"
+    - "*.egg-info/**"
 
 artifacts:
   default:
@@ -45,12 +54,8 @@ resources:
   jobs:
     deployment:
       name: ${bundle.name}-workflow
-      # Uncomment to add email notifications on job failure
-      # email_notifications:
-      #   on_failure:
-      #     - your-email@example.com
       schedule:
-        quartz_cron_expression: "0 0 6 ? * MON"  # Run every Monday at 6 AM
+        quartz_cron_expression: "0 0 6 ? * MON"
         timezone_id: "Europe/Amsterdam"
         pause_status: ${var.schedule_pause_status}
       tags:
@@ -69,9 +74,7 @@ resources:
               "TOKEN_STATUS_CHECK": "{{secrets/mlops_course/git_token_status_check}}"
 
       tasks:
-        # Task 1: Data Processing
         - task_key: "preprocessing"
-          # Use existing cluster
           existing_cluster_id: "1016-224704-pj1xopz7"
           spark_python_task:
             python_file: "scripts/01.process_data.py"
@@ -85,7 +88,6 @@ resources:
           libraries:
             - whl: ./dist/*.whl
 
-        # Task 2: Model Training with Feature Engineering
         - task_key: "train_model"
           existing_cluster_id: "1016-224704-pj1xopz7"
           depends_on:
@@ -108,16 +110,14 @@ resources:
           libraries:
             - whl: ./dist/*.whl
 
-        # Condition Task: Check if Model Was Updated
         - task_key: "model_updated"
           condition_task:
             op: "EQUAL_TO"
             left: "{{tasks.train_model.values.model_updated}}"
-            right: "1"
+            right: "true"
           depends_on:
             - task_key: "train_model"
 
-        # Task 3: Model Deployment (only if model was updated)
         - task_key: "deploy_model"
           depends_on:
             - task_key: "model_updated"
@@ -135,7 +135,6 @@ resources:
           libraries:
             - whl: ./dist/*.whl
 
-        # Condition Task: Check if GitHub Status Post is Required (test mode only)
         - task_key: "post_commit_status_required"
           condition_task:
             op: "EQUAL_TO"
@@ -144,7 +143,6 @@ resources:
           depends_on:
             - task_key: "deploy_model"
 
-        # Task 4: Post Commit Status to GitHub (only in test mode)
         - task_key: "post_commit_status"
           depends_on:
             - task_key: "post_commit_status_required"
@@ -153,7 +151,7 @@ resources:
           spark_python_task:
             python_file: "scripts/04.post_commit_status.py"
             parameters:
-              - "success"  # Status: success, failure, pending, or error
+              - "success"
               - "--job_run_id"
               - "{{job.run_id}}"
               - "--job_id"
@@ -168,7 +166,6 @@ resources:
             - whl: ./dist/*.whl
 
 targets:
-  # Development Target
   dev:
     default: true
     mode: development
@@ -186,7 +183,6 @@ targets:
         path: .
         dynamic_version: true
 
-  # Test Target (for integration testing)
   test:
     presets:
       name_prefix: 'test_'
@@ -197,14 +193,7 @@ targets:
       schedule_pause_status: PAUSED
       is_test: 1
       env: dev
-    artifacts:
-      default:
-        type: whl
-        build: uv build
-        path: .
-        dynamic_version: true
 
-  # Acceptance Target (pre-production validation)
   acc:
     presets:
       name_prefix: 'acc_'
@@ -213,23 +202,16 @@ targets:
       root_path: /Shared/.bundle/${bundle.target}/${bundle.name}
     variables:
       schedule_pause_status: PAUSED
-      is_test: 0
+      is_test: 1
       env: acc
-    artifacts:
-      default:
-        type: whl
-        build: uv build
-        path: .
-        dynamic_version: true
 
-  # Production Target
   prd:
     mode: production
     workspace:
       host: https://dbc-f122dc18-1b68.cloud.databricks.com
       root_path: /Shared/.bundle/${bundle.target}/${bundle.name}
     variables:
-      schedule_pause_status: PAUSED  # Change to UNPAUSED to enable scheduled runs
+      schedule_pause_status: PAUSED
       is_test: 0
       env: prd
     artifacts:

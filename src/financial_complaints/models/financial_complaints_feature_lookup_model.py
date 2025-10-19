@@ -706,10 +706,10 @@ class FinancialComplaintsFeatureLookupModel:
 
     def update_feature_tables(self) -> None:
         """Update feature tables with latest data."""
-        logger.info("ðŸ”„ Updating feature tables...")
+        logger.info("🔄 Updating feature tables...")
         
-        # Update company features using MERGE
-        # Simplified version without Timely_response column to avoid column name issues
+        # 1. Update company features
+        logger.info("  Updating company_features...")
         self.spark.sql(f"""
         MERGE INTO {self.company_features_table} target
         USING (
@@ -724,11 +724,11 @@ class FinancialComplaintsFeatureLookupModel:
                 COUNT(DISTINCT State) as company_state_coverage,
                 0.5 as company_timely_response_rate,
                 ((1 - AVG(CASE WHEN complaint_upheld = 1 THEN 1.0 ELSE 0.0 END)) * 0.5 +
-                 CASE
+                CASE
                     WHEN AVG(processing_days) < 30 THEN 0.3
                     WHEN AVG(processing_days) < 60 THEN 0.2
                     ELSE 0.1
-                 END) as company_reliability_score,
+                END) as company_reliability_score,
                 current_timestamp() as update_timestamp
             FROM {self.catalog_name}.{self.schema_name}.train_set
             WHERE Company IS NOT NULL
@@ -739,7 +739,66 @@ class FinancialComplaintsFeatureLookupModel:
         WHEN NOT MATCHED THEN INSERT *
         """)
         
-        logger.info("âœ… Feature tables updated.")
+        company_count = self.spark.sql(f"SELECT COUNT(*) as cnt FROM {self.company_features_table}").collect()[0]['cnt']
+        logger.info(f"  ✓ company_features: {company_count} rows")
+        
+        # 2. Update state features
+        logger.info("  Updating state_features...")
+        self.spark.sql(f"""
+        MERGE INTO {self.state_features_table} target
+        USING (
+            SELECT
+                State,
+                COUNT(*) as state_complaint_count,
+                AVG(processing_days) as state_avg_processing_days,
+                COUNT(DISTINCT Company) as state_company_diversity,
+                AVG(CASE WHEN complaint_upheld = 1 THEN 1.0 ELSE 0.0 END) as state_regulatory_score,
+                current_timestamp() as update_timestamp
+            FROM {self.catalog_name}.{self.schema_name}.train_set
+            WHERE State IS NOT NULL
+            GROUP BY State
+        ) source
+        ON target.State = source.State
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+        """)
+        
+        state_count = self.spark.sql(f"SELECT COUNT(*) as cnt FROM {self.state_features_table}").collect()[0]['cnt']
+        logger.info(f"  ✓ state_features: {state_count} rows")
+        
+        # 3. Update text features
+        logger.info("  Updating text_features...")
+        self.spark.sql(f"""
+        MERGE INTO {self.text_features_table} target
+        USING (
+            SELECT 
+                Complaint_ID as complaint_id,
+                text_length,
+                text_word_count,
+                text_sentence_count,
+                text_avg_word_length,
+                text_reading_ease,
+                text_grade_level,
+                text_caps_ratio,
+                text_punct_ratio,
+                text_question_count,
+                text_exclamation_count,
+                text_sentiment_polarity,
+                text_sentiment_subjectivity,
+                text_unique_words,
+                current_timestamp() as update_timestamp
+            FROM {self.catalog_name}.{self.schema_name}.train_set
+            WHERE Complaint_ID IS NOT NULL
+        ) source
+        ON target.complaint_id = source.complaint_id
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+        """)
+        
+        text_count = self.spark.sql(f"SELECT COUNT(*) as cnt FROM {self.text_features_table}").collect()[0]['cnt']
+        logger.info(f"  ✓ text_features: {text_count} rows")
+        
+        logger.info("✅ All feature tables updated successfully.")
 
     def score_batch(self, df: DataFrame) -> DataFrame:
         """Score a batch of data using the registered model.
