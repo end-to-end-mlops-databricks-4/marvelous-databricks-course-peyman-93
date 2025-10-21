@@ -1,0 +1,120 @@
+prd:
+  catalog_name: mlops_prd
+  schema_name: peyman21
+acc:
+  catalog_name: mlops_acc
+  schema_name: peyman21
+dev:
+  catalog_name: mlops_dev
+  schema_name: peyman21
+
+experiment_name_basic: /Shared/financial-complaints-basic
+experiment_name_custom: /Shared/financial-complaints-custom
+experiment_name_fe: /Shared/financial-complaints-fe
+
+# Model training parameters
+parameters:
+  test_size: 0.2
+  temporal_test_size: 0.1
+  random_state: 42
+  min_samples_for_company_metrics: 10
+  min_samples_for_zip_metrics: 10
+  text_batch_size: 1000
+  sample_size: 10000
+  stratify: true
+  enable_cdf: true
+
+# Data quality thresholds
+data_quality:
+  max_missing_percentage: 0.5
+  min_records_per_class: 100
+  outlier_std_threshold: 6 
+
+
+num_features:
+  - processing_days
+  - complaint_year
+  - complaint_month
+  - complaint_day
+  - complaint_day_of_week
+  - complaint_quarter
+  - complaint_week_of_year
+  - days_since_dataset_start
+  - company_complaint_count
+  - company_avg_processing_days
+  - company_median_processing_days
+  - company_processing_std
+  - company_reliability_score
+  - company_success_rank
+  - company_success_percentile
+  - company_risk_score
+  - state_complaint_count
+  - state_avg_processing_days
+  - state_company_diversity
+  - state_regulatory_score
+  - zip3_complaint_count
+  - text_length
+  - text_word_count
+  - text_sentence_count
+  - text_avg_word_length
+  - text_reading_ease
+  - text_grade_level
+  - text_caps_ratio
+  - text_punct_ratio
+  - text_question_count
+  - text_exclamation_count
+  - text_sentiment_polarity
+  - text_sentiment_subjectivity
+  - text_unique_words
+
+cat_features:
+  - Product
+  - Sub_product
+  - Issue
+  - Sub_issue
+  - Company
+  - State
+  - ZIP_3digit
+  - Submitted_via
+  - Tags
+  - Consumer_consent_provided
+  - Timely_response
+  - consumer_disputed
+  - region
+  - season
+  - near_holiday
+  - company_size
+  - processing_speed
+  - narrative_complexity
+  - text_sentiment_category
+  - company_size_speed
+
+
+# Binary indicators (treated as numeric)
+binary_features:
+  - has_special_tag
+  - has_narrative
+  - has_company_public_response
+  - is_weekend
+  - is_monthend
+  - is_monthstart  
+
+
+# High cardinality features (for encoding strategy)
+high_cardinality_features:
+  - Company
+  - Issue
+  - ZIP_3digit  
+
+
+# Feature engineering flags
+feature_engineering:
+  enable_text_features: true
+  enable_company_features: true
+  enable_geographic_features: true
+  enable_temporal_patterns: true
+  enable_interaction_features: true  
+
+target: complaint_upheld
+secondary_target: financial_relief
+

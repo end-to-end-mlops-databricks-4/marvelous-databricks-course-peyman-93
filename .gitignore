@@ -95,3 +95,6 @@ dmypy.json
 # VS code configuration
 .vscode
 .history
+.venv-mlops/
+data/Consumer_Complaints.csv
+.env

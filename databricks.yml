@@ -1,0 +1,222 @@
+# This is a Databricks asset bundle definition for marvelous-databricks-course-peyman-93.
+bundle:
+  name: marvelous-databricks-course-peyman-93
+
+sync:
+  include:
+    - "**/*.py"
+    - "**/*.ipynb"
+    - "scripts/**"
+    - "src/**"
+    - "notebooks/**"
+    - "data/*.csv"
+    - "project_config.yml"
+  exclude:
+    - ".git/**"
+    - ".venv/**"
+    - "__pycache__/**"
+    - "**/*.pyc"
+    - ".DS_Store"
+    - "dist/**"
+    - "build/**"
+    - "*.egg-info/**"
+
+artifacts:
+  default:
+    type: whl
+    build: uv build
+    path: .
+
+variables:
+  git_sha:
+    description: Git commit SHA
+    default: abcd
+  repo:
+    description: Repository name
+    default: marvelous-databricks-course-peyman-93
+  org:
+    description: GitHub organization or user
+    default: end-to-end-mlops-databricks-4
+  branch:
+    description: Git branch
+    default: main
+  schedule_pause_status:
+    description: Schedule pause status (PAUSED or UNPAUSED)
+    default: PAUSED
+  is_test:
+    description: Test mode flag (0 for production, 1 for test)
+    default: 0
+  env:
+    description: Environment (dev, acc, or prd)
+    default: dev
+
+resources:
+  jobs:
+    deployment:
+      name: ${bundle.name}-workflow
+      schedule:
+        quartz_cron_expression: "0 0 6 ? * MON"
+        timezone_id: "Europe/Amsterdam"
+        pause_status: ${var.schedule_pause_status}
+      tags:
+        project_name: "financial-complaints"
+      job_clusters:
+        - job_cluster_key: "complaints-cluster"
+          new_cluster:
+            spark_version: "16.4.x-scala2.12"
+            data_security_mode: "SINGLE_USER"
+            node_type_id: "r3.xlarge"
+            driver_node_type_id: "r3.xlarge"
+            autoscale:
+              min_workers: 1
+              max_workers: 2
+            spark_env_vars:
+              "TOKEN_STATUS_CHECK": "{{secrets/mlops_course/git_token_status_check}}"
+
+      tasks:
+        - task_key: "preprocessing"
+          existing_cluster_id: "1016-224704-pj1xopz7"
+          spark_python_task:
+            python_file: "scripts/01.process_data.py"
+            parameters:
+              - "--root_path"
+              - "${workspace.root_path}"
+              - "--env"
+              - "${var.env}"
+              - "--is_test"
+              - "${var.is_test}"
+          libraries:
+            - whl: ./dist/*.whl
+
+        - task_key: "train_model"
+          existing_cluster_id: "1016-224704-pj1xopz7"
+          depends_on:
+            - task_key: "preprocessing"
+          spark_python_task:
+            python_file: "scripts/02.train_register_fe_model.py"
+            parameters:
+              - "--root_path"
+              - "${workspace.root_path}"
+              - "--env"
+              - "${var.env}"
+              - "--git_sha"
+              - "${var.git_sha}"
+              - "--job_run_id"
+              - "{{job.run_id}}"
+              - "--branch"
+              - "${var.branch}"
+              - "--is_test"
+              - "${var.is_test}"
+          libraries:
+            - whl: ./dist/*.whl
+
+        - task_key: "model_updated"
+          condition_task:
+            op: "EQUAL_TO"
+            left: "{{tasks.train_model.values.model_updated}}"
+            right: "true"
+          depends_on:
+            - task_key: "train_model"
+
+        - task_key: "deploy_model"
+          depends_on:
+            - task_key: "model_updated"
+              outcome: "true"
+          existing_cluster_id: "1016-224704-pj1xopz7"
+          spark_python_task:
+            python_file: "scripts/03.deploy_model.py"
+            parameters:
+              - "--root_path"
+              - "${workspace.root_path}"
+              - "--env"
+              - "${var.env}"
+              - "--is_test"
+              - "${var.is_test}"
+          libraries:
+            - whl: ./dist/*.whl
+
+        - task_key: "post_commit_status_required"
+          condition_task:
+            op: "EQUAL_TO"
+            left: "${var.is_test}"
+            right: "1"
+          depends_on:
+            - task_key: "deploy_model"
+
+        - task_key: "post_commit_status"
+          depends_on:
+            - task_key: "post_commit_status_required"
+              outcome: "true"
+          existing_cluster_id: "1016-224704-pj1xopz7"
+          spark_python_task:
+            python_file: "scripts/04.post_commit_status.py"
+            parameters:
+              - "success"
+              - "--job_run_id"
+              - "{{job.run_id}}"
+              - "--job_id"
+              - "{{job.id}}"
+              - "--git_sha"
+              - "${var.git_sha}"
+              - "--repo"
+              - "${var.repo}"
+              - "--org"
+              - "${var.org}"
+          libraries:
+            - whl: ./dist/*.whl
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://dbc-f122dc18-1b68.cloud.databricks.com
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.target}/${bundle.name}
+    variables:
+      schedule_pause_status: PAUSED
+      is_test: 0
+      env: dev
+    artifacts:
+      default:
+        type: whl
+        build: uv build
+        path: .
+        dynamic_version: true
+
+  test:
+    presets:
+      name_prefix: 'test_'
+    workspace:
+      host: https://dbc-f122dc18-1b68.cloud.databricks.com
+      root_path: /Shared/.bundle/${bundle.target}/${bundle.name}
+    variables:
+      schedule_pause_status: PAUSED
+      is_test: 1
+      env: dev
+
+  acc:
+    presets:
+      name_prefix: 'acc_'
+    workspace:
+      host: https://dbc-f122dc18-1b68.cloud.databricks.com
+      root_path: /Shared/.bundle/${bundle.target}/${bundle.name}
+    variables:
+      schedule_pause_status: PAUSED
+      is_test: 1
+      env: acc
+
+  prd:
+    mode: production
+    workspace:
+      host: https://dbc-f122dc18-1b68.cloud.databricks.com
+      root_path: /Shared/.bundle/${bundle.target}/${bundle.name}
+    variables:
+      schedule_pause_status: PAUSED
+      is_test: 0
+      env: prd
+    artifacts:
+      default:
+        type: whl
+        build: uv build
+        path: .
+        dynamic_version: false
